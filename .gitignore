@@ -29,6 +29,12 @@ mono_crash.*
 [Rr]eleases/x64/
 bin/x64/
 obj/x64/
+x64/
+Debug/
+Release/
+GeneratedFiles/
+*.txt
+*.log
 
 [Dd]ebug/x86/
 [Dd]ebugPublic/x86/
@@ -264,6 +270,7 @@ ClientBin/
 ~$*
 *~
 *.dbmdl
+*.db
 *.dbproj.schemaview
 *.jfm
 *.pfx
