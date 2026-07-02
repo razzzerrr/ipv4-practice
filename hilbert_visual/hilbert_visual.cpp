@@ -8,4 +8,3 @@ hilbert_visual::hilbert_visual(QWidget *parent)
 
 hilbert_visual::~hilbert_visual()
 {}
-
