@@ -1,7 +1,0 @@
-<Solution>
-  <Configurations>
-    <Platform Name="x64" />
-    <Platform Name="x86" />
-  </Configurations>
-  <Project Path="hilbert.vcxproj" Id="0dbc81f1-a2ff-428d-84a4-f45b82bb6b13" />
-</Solution>

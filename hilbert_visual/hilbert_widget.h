@@ -1,21 +1,21 @@
-#pragma once
+п»ї#pragma once
 #include <QWidget>
 #include <QImage>
+#include <QPixmap>
 #include <QMouseEvent>
 #include <vector>
-#include <unordered_map>
 
-// --- ПУНКТ 4 & 8: Структура для отображения принадлежности подсетей компаниям ---
+// вЂ”С‚СЂСѓРєС‚СѓСЂР° РґР»В¤ РѕС‚РѕР±СЂР°Р¶РµРЅРёВ¤ РїСЂРёРЅР°РґР»РµР¶РЅРѕСЃС‚Рё РїРѕРґСЃРµС‚РµР№ РєРѕРјРїР°РЅРёВ¤Рј
 struct NetworkBlock {
-    QString rawInput;   // Исходная строка (например, "10.50.0.0/16" или "10.0.1.0-10.0.2.255")
-    QString companyName;// Имя компании (Google, Meta, Яндекс, Ростелеком и т.д.)
-    QColor color;       // Уникальный цвет компании на карте
+    QString rawInput;     // В»СЃС…РѕРґРЅР°В¤ СЃС‚СЂРѕРєР° (РЅР°РїСЂРёРјРµСЂ, "10.50.0.0/16")
+    QString companyName;  // В»РјВ¤ РєРѕРјРїР°РЅРёРё (Google, СЏРЅРґРµРєСЃ...)
+    QColor color;         // вЂќРЅРёРєР°Р»СЊРЅС‹Р№ С†РІРµС‚ РєРѕРјРїР°РЅРёРё РЅР° РєР°СЂС‚Рµ
 };
 
-// Внутреннее представление точки на карте для быстрого рендеринга
+// В¬РЅСѓС‚СЂРµРЅРЅРµРµ РїСЂРµРґСЃС‚Р°РІР»РµРЅРёРµ С‚РѕС‡РєРё РЅР° РєР°СЂС‚Рµ РґР»В¤ Р±С‹СЃС‚СЂРѕРіРѕ СЂРµРЅРґРµСЂРёРЅРіР°
 struct MapPoint {
     uint32_t index;
-    size_t blockId;     // Индекс родительской структуры NetworkBlock
+    size_t blockId;       // ID СЂРѕРґРёС‚РµР»СЊСЃРєРѕР№ СЃС‚СЂСѓРєС‚СѓСЂС‹ NetworkBlock
 };
 
 class HilbertWidget : public QWidget {
@@ -28,7 +28,7 @@ public:
     void setGridVisible(bool visible);
     bool saveToPng(const QString& filePath);
 
-    // Динамическое добавление точек из парсера
+    // Ж’РёРЅР°РјРёС‡РµСЃРєРѕРµ РґРѕР±Р°РІР»РµРЅРёРµ С‚РѕС‡РµРє РёР· РїР°СЂСЃРµСЂР°
     void addIpPoint(uint32_t exactIndex, size_t blockId);
     size_t registerNetworkBlock(const QString& input, const QString& company, const QColor& color);
     void refreshMap() { generateHilbertMap(); }
@@ -42,13 +42,13 @@ protected:
 
 private:
     QImage m_mapImage;
+    QPixmap m_mapPixmap; // СРїРїР°СЂР°С‚РЅРѕ РѕРїС‚РёРјРёР·РёСЂРѕРІР°РЅРЅС‹Р№ РєСЌС€ РґР»В¤ Р±С‹СЃС‚СЂРѕР№ РѕС‚СЂРёСЃРѕРІРєРё РєР°СЂС‚С‹
     bool m_isDbLoaded = false;
     bool m_showGrid = true;
 
-    // Списки структур по требованию куратора
-    std::vector<NetworkBlock> m_networkBlocks;       // Список созданных структур (Пункт 4)
-    std::vector<MapPoint> m_pointsDb;                // База отображаемых точек
-    std::unordered_map<uint32_t, size_t> m_lookUp;   // Быстрый поиск: индекс -> индекс в m_pointsDb
+    std::vector<NetworkBlock> m_networkBlocks;   // вЂ”РїРёСЃРѕРє СЃРѕР·РґР°РЅРЅС‹С… СЃС‚СЂСѓРєС‚СѓСЂ
+    std::vector<MapPoint> m_pointsDb;            // Р…Р°Р·Р° РѕС‚РѕР±СЂР°Р¶Р°РµРјС‹С… С‚РѕС‡РµРє
+    std::vector<int32_t> m_lookUp;               // С•Р»РѕСЃРєРёР№ РјР°СЃСЃРёРІ O(1) РґР»В¤ РјРіРЅРѕРІРµРЅРЅРѕР№ РѕС‡РёСЃС‚РєРё Рё РїРѕРёСЃРєР°
 
     int m_sectorCounts[8][8];
 

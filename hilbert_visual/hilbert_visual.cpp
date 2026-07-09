@@ -1,4 +1,4 @@
-#include "hilbert_visual.h"
+﻿#include "hilbert_visual.h"
 
 hilbert_visual::hilbert_visual(QWidget *parent)
     : QMainWindow(parent)

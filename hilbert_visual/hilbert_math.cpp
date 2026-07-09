@@ -1,5 +1,8 @@
-#include "hilbert_math.h"
+﻿#include "hilbert_math.h"
 #include <algorithm>
+#include <QHostAddress>
+#include <QStringList>
+#include <vector>
 
 namespace Hilbert {
 

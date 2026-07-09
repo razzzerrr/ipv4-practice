@@ -54,6 +54,9 @@
     <ClInclude Include="hilbert_math.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ip_parser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <QtMoc Include="hilbert_widget.h">

@@ -1,18 +1,19 @@
 ﻿#include "main_window.h"
+#include "ip_parser.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QTextStream>
-#include <QCheckBox>
 #include <QInputDialog>
-#include <map>
-#include <vector>
+#include <QHostAddress>
+#include <QStringList>
+#include <QHeaderView> // Необходим для настройки заголовков таблицы
 
 // Конструктор главного окна: подготавливаем ОЗУ-базу уникального владения адресами
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    // 16 777 216 байт под трекер (покрывает весь диапазон маски 10.0.0.0/8)
+    // 16 777 216 ячеек под трекер (покрывает абсолютно всё мировое пространство IPv4 на уровне подсетей /24)
     m_ipOwnership.assign(16777216, 0);
     m_idToCompany.push_back(QString::fromUtf8("Свободно")); // ID = 0 жестко закреплен за нераспределенным пространством
 
@@ -26,9 +27,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         m_hilbertMap->setGridVisible(checked);
         });
 
-    // Архитектурная заглушка под будущую сортировку/фильтрацию категорий (пропущена, чтобы не плодить мертвый код)
-    connect(m_filterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [=](int index) {
-        Q_UNUSED(index);
+    // Умный динамический поиск по таблице (без перезагрузки данных)
+    connect(m_searchEdit, &QLineEdit::textChanged, this, [=](const QString& text) {
+        for (int i = 0; i < m_analyticsTable->rowCount(); ++i) {
+            QTableWidgetItem* item = m_analyticsTable->item(i, 0); // Проверяем колонку "Компания"
+            if (item) {
+                bool matches = item->text().contains(text, Qt::CaseInsensitive);
+                m_analyticsTable->setRowHidden(i, !matches); // Скрываем строку, если нет совпадений
+            }
+        }
         });
 
     // Обработчик экспорта в изображение высокого разрешения
@@ -54,7 +61,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         m_idToCompany.push_back(QString::fromUtf8("Свободно"));
         m_ipOwnership.assign(16777216, 0);
 
-        m_filterCombo->setCurrentIndex(0);
+        m_searchEdit->clear();
         m_statusLabel->setText(QString::fromUtf8("Статус: Карта очищена"));
         m_ipInfoLabel->setText(QString::fromUtf8("<b>Информация об IP:</b><br>Наведите курсор на карту..."));
         updateAnalyticsDisplay();
@@ -72,7 +79,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
         if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
             QTextStream stream(&file);
-            stream.setEncoding(QStringConverter::Utf8); // Корректно читаем кириллицу в именах провайдеров на любых ОС
+            stream.setEncoding(QStringConverter::Utf8); // Корректно читаем кириллицу
 
             QString line;
             while (stream.readLineInto(&line)) {
@@ -85,7 +92,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             }
             file.close();
 
-            m_hilbertMap->refreshMap(); // Перерисовываем карту ОДИН раз после парсинга всего файла для высокой скорости работы
+            m_hilbertMap->refreshMap(); // Перерисовываем карту ОДИН раз после парсинга файла
             updateAnalyticsDisplay();   // Обновляем статистику
 
             QFileInfo fi(filePath);
@@ -100,8 +107,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_manualAddButton, &QPushButton::clicked, this, [=]() {
         bool ok;
         QString input = QInputDialog::getText(this, QString::fromUtf8("Ручной ввод адресов"),
-            QString::fromUtf8("Введите подсеть и компанию через ';' или просто адрес:\nПример: 10.5.0.0/16; Google\nИли диапазон: 10.1.1.0-10.1.2.255; Яндекс"),
-            QLineEdit::Normal, "10.0.0.0/24; Ростелеком", &ok);
+            QString::fromUtf8("Введите подсеть и компанию через ';' или просто адрес:\nПример: 8.8.8.0/24; Google\nИли диапазон: 185.0.0.0-185.5.255.255; Яндекс\nИли сокращенный CIDR: 192./16; Локалка"),
+            QLineEdit::Normal, "192.168.0.0/16; Локальные сети", &ok);
 
         if (ok && !input.trimmed().isEmpty()) {
             if (parseAndAddLine(input.trimmed())) {
@@ -116,35 +123,27 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         });
 }
 
-// Интеллектуальный разборщик форматов ввода (CIDR, Диапазоны, Одиночные IP)
+// Интеллектуальный разборщик форматов ввода глобального IPv4 пространства
 bool MainWindow::parseAndAddLine(const QString& line) {
     QString trimmed = line.trimmed();
     if (trimmed.isEmpty() || trimmed.startsWith('#')) return false;
 
     QStringList parts = trimmed.split(';');
+    if (parts.isEmpty()) return false;
+
     QString ipExpression = parts[0].trimmed();
     QString companyName = (parts.size() > 1) ? parts[1].trimmed() : QString::fromUtf8("Неизвестный провайдер");
 
-    // Выделение и сохранение сквозного числового ID для новых компаний (экономим память в трекере)
+    // Выделение и сохранение числового ID для новых компаний (защита ОЗУ)
     if (m_companyToId.find(companyName) == m_companyToId.end()) {
-        if (m_idToCompany.size() >= 255) return false; // Защита емкости uint8_t
+        if (m_idToCompany.size() >= 255) return false; // Ограничение емкости uint8_t
         uint8_t newId = static_cast<uint8_t>(m_idToCompany.size());
         m_companyToId[companyName] = newId;
         m_idToCompany.push_back(companyName);
     }
     uint8_t currentCompanyId = m_companyToId[companyName];
 
-    // Лямбда для парсинга октетов и генерации 24-битного смещения внутри сети 10.0.0.0/8
-    auto lambdaIpToUint = [](const QString& ipStr) -> uint32_t {
-        QStringList octets = ipStr.split('.');
-        if (octets.size() != 4) return 0xFFFFFFFF;
-        uint8_t b2 = octets[1].toUInt();
-        uint8_t b3 = octets[2].toUInt();
-        uint8_t b4 = octets[3].toUInt();
-        return (static_cast<uint32_t>(b2) << 16) | (static_cast<uint32_t>(b3) << 8) | b4;
-        };
-
-    // Автоматическая генерация уникальной палитры для провайдеров
+    // Автоматическая генерация уникальной палитры цветов для провайдеров
     static std::map<QString, QColor> companyColors;
     if (companyColors.find(companyName) == companyColors.end()) {
         static const QColor palette[] = {
@@ -157,16 +156,14 @@ bool MainWindow::parseAndAddLine(const QString& line) {
     QColor currentCompanyColor = companyColors[companyName];
     size_t blockId = m_hilbertMap->registerNetworkBlock(ipExpression, companyName, currentCompanyColor);
 
-    // Арбитр владения IP: предотвращает наложения подсетей и дубликаты (исключает статистику > 100%)
-    auto assignIpSecure = [this, currentCompanyId, companyName, blockId](uint32_t idx) {
-        if (idx >= 16777216) return;
+    // Арбитр безопасного владения адресами (исключает наложения подсетей)
+    auto assignIpSecure = [this, currentCompanyId, companyName, blockId](uint32_t subnetIdx) {
+        if (subnetIdx >= 16777216) return;
 
-        uint8_t oldCompanyId = m_ipOwnership[idx];
+        uint8_t oldCompanyId = m_ipOwnership[subnetIdx];
+        if (oldCompanyId == currentCompanyId) return; // Уже принадлежит нам
 
-        // Защита: этот адрес уже принадлежит нам, повторно не суммируем
-        if (oldCompanyId == currentCompanyId) return;
-
-        // Перезапись: адрес перекуплен/переназначен. Вычитаем единицу у старого владельца
+        // Перезапись: если адрес перекуплен, вычитаем у старого владельца
         if (oldCompanyId != 0) {
             QString oldCompanyName = m_idToCompany[oldCompanyId];
             if (m_companyStats[oldCompanyName] > 0) {
@@ -174,59 +171,31 @@ bool MainWindow::parseAndAddLine(const QString& line) {
             }
         }
 
-        // Регистрируем чистый адрес на нового владельца
         m_companyStats[companyName]++;
-        m_ipOwnership[idx] = currentCompanyId;
-        m_hilbertMap->addIpPoint(idx, blockId);
+        m_ipOwnership[subnetIdx] = currentCompanyId;
+        m_hilbertMap->addIpPoint(subnetIdx, blockId);
         };
 
-    // Анализ сценария 1: Работа с CIDR нотацией (напр. /16, /24) через битовые сдвиги масок
-    if (ipExpression.contains('/')) {
-        QStringList cidrParts = ipExpression.split('/');
-        if (cidrParts.size() != 2) return false;
+    // --- МОДЕРНИЗАЦИЯ: Делегируем весь кривой парсинг нашему новому IpParser ---
+    bool parseSuccess = false;
+    std::vector<uint32_t> blocks24 = IpParser::parseStringTo24Blocks(ipExpression, parseSuccess);
 
-        uint32_t baseIdx = lambdaIpToUint(cidrParts[0].trimmed());
-        int maskLength = cidrParts[1].toInt();
-        if (baseIdx == 0xFFFFFFFF || maskLength < 8 || maskLength > 32) return false;
-
-        int hostBits = 32 - maskLength;
-        uint32_t totalAddresses = (1 << hostBits);
-        uint32_t startIdx = baseIdx & ~((1 << hostBits) - 1);
-        uint32_t endIdx = startIdx + totalAddresses;
-
-        for (uint32_t idx = startIdx; idx < endIdx; ++idx) {
-            assignIpSecure(idx);
-        }
-        return true;
+    if (!parseSuccess || blocks24.empty()) {
+        return false; // Запись битая или не прошла валидацию QHostAddress внутри парсера
     }
-    // Анализ сценария 2: Прямой диапазон адресов через дефис
-    else if (ipExpression.contains('-')) {
-        QStringList rangeParts = ipExpression.split('-');
-        if (rangeParts.size() != 2) return false;
 
-        uint32_t startIdx = lambdaIpToUint(rangeParts[0].trimmed());
-        uint32_t endIdx = lambdaIpToUint(rangeParts[1].trimmed());
-        if (startIdx == 0xFFFFFFFF || endIdx == 0xFFFFFFFF || startIdx > endIdx) return false;
-
-        for (uint32_t idx = startIdx; idx <= endIdx; ++idx) {
-            assignIpSecure(idx);
-        }
-        return true;
-    }
-    // Анализ сценария 3: Единичный хост / целевой IP адрес
-    else {
-        uint32_t idx = lambdaIpToUint(ipExpression);
-        if (idx == 0xFFFFFFFF) return false;
-
+    // Спокойно прокручиваем все /24 индексы, которые сгенерировал парсер
+    for (uint32_t idx : blocks24) {
         assignIpSecure(idx);
-        return true;
     }
+
+    return true;
 }
 
 // Сборка и инициализация интерфейса Qt (слои Layout, кнопки, сайдбар)
 void MainWindow::setupUi() {
-    setWindowTitle(QString::fromUtf8("Служба визуализации адресного пространства IPv4"));
-    resize(1200, 850);
+    setWindowTitle(QString::fromUtf8("Служба глобальной визуализации интернет-пространства IPv4"));
+    resize(1250, 850);
 
     QWidget* centralWidget = new QWidget(this);
     setCentralWidget(centralWidget);
@@ -235,14 +204,12 @@ void MainWindow::setupUi() {
     mainLayout->setContentsMargins(15, 15, 15, 15);
     mainLayout->setSpacing(15);
 
-    // Добавление кастомного виджета карты Гильберта (занимает приоритетное пространство окна)
     m_hilbertMap = new HilbertWidget(this);
     m_hilbertMap->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     mainLayout->addWidget(m_hilbertMap, 3);
 
-    // Формирование боковой панели управления (Sidebar)
     m_sidebar = new QWidget(this);
-    m_sidebar->setFixedWidth(310);
+    m_sidebar->setFixedWidth(500);
 
     QVBoxLayout* sidebarLayout = new QVBoxLayout(m_sidebar);
     sidebarLayout->setContentsMargins(10, 0, 10, 0);
@@ -265,41 +232,61 @@ void MainWindow::setupUi() {
     line1->setFrameShape(QFrame::HLine);
     sidebarLayout->addWidget(line1);
 
-    QLabel* filterLabel = new QLabel(QString::fromUtf8("Фильтр по категориям владельцев:"), m_sidebar);
-    sidebarLayout->addWidget(filterLabel);
-
-    m_filterCombo = new QComboBox(m_sidebar);
-    m_filterCombo->addItem(QString::fromUtf8("Показать все подсети"));
-    m_filterCombo->addItem(QString::fromUtf8("Крупные IT-Корпорации"));
-    m_filterCombo->addItem(QString::fromUtf8("Государственные узлы"));
-    m_filterCombo->addItem(QString::fromUtf8("Коммерческие провайдеры"));
-    sidebarLayout->addWidget(m_filterCombo);
-
-    QFrame* line2 = new QFrame(m_sidebar);
-    line2->setFrameShape(QFrame::HLine);
-    sidebarLayout->addWidget(line2);
-
-    // Настройка верхнего малого экрана (Динамическая информация под мышкой)
     m_ipInfoLabel = new QLabel(QString::fromUtf8("<b>Информация об IP:</b><br>Наведите курсор на карту..."), m_sidebar);
     m_ipInfoLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    m_ipInfoLabel->setMinimumHeight(60);
+    m_ipInfoLabel->setMinimumHeight(75);
     m_ipInfoLabel->setWordWrap(true);
     m_ipInfoLabel->setFrameStyle(QFrame::StyledPanel | QFrame::Sunken);
     m_ipInfoLabel->setMargin(8);
     sidebarLayout->addWidget(m_ipInfoLabel);
 
-    // Настройка нижнего большого экрана (Глобальная аналитика всей базы данных)
-    m_analyticsLabel = new QLabel(QString::fromUtf8("<b>Аналитика:</b><br>База данных пуста. Загрузите файл..."), m_sidebar);
-    m_analyticsLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    m_analyticsLabel->setMinimumHeight(200);
-    m_analyticsLabel->setWordWrap(true);
-    m_analyticsLabel->setFrameStyle(QFrame::StyledPanel | QFrame::Sunken);
-    m_analyticsLabel->setMargin(8);
-    sidebarLayout->addWidget(m_analyticsLabel);
+    QFrame* line2 = new QFrame(m_sidebar);
+    line2->setFrameShape(QFrame::HLine);
+    sidebarLayout->addWidget(line2);
 
-    sidebarLayout->addStretch(); // Пружина, сдвигающая кнопки управления к нижнему краю окна
+    QLabel* tableTitleLabel = new QLabel(QString::fromUtf8("<b>ГЛОБАЛЬНОЕ РАСПРЕДЕЛЕНИЕ ДОЛЕЙ:</b>"), m_sidebar);
+    sidebarLayout->addWidget(tableTitleLabel);
 
-    // Функциональные кнопки
+    QHBoxLayout* tableAndSearchLayout = new QHBoxLayout();
+    tableAndSearchLayout->setSpacing(10);
+
+    QVBoxLayout* searchContainerLayout = new QVBoxLayout();
+    QLabel* searchLabel = new QLabel(QString::fromUtf8("<b>Поиск:</b>"), m_sidebar);
+    m_searchEdit = new QLineEdit(m_sidebar);
+    m_searchEdit->setPlaceholderText(QString::fromUtf8("Компания..."));
+    m_searchEdit->setClearButtonEnabled(true);
+    m_searchEdit->setFixedWidth(120);
+
+    searchContainerLayout->addWidget(searchLabel);
+    searchContainerLayout->addWidget(m_searchEdit);
+    searchContainerLayout->addStretch();
+    tableAndSearchLayout->addLayout(searchContainerLayout);
+
+    m_analyticsTable = new QTableWidget(m_sidebar);
+    m_analyticsTable->setColumnCount(3);
+
+    QStringList headers;
+    headers << QString::fromUtf8("Компания") << QString::fromUtf8("Подсети") << QString::fromUtf8("Доля %");
+    m_analyticsTable->setHorizontalHeaderLabels(headers);
+
+    m_analyticsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_analyticsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_analyticsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+
+    m_analyticsTable->verticalHeader()->setVisible(false);
+    m_analyticsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_analyticsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_analyticsTable->setSortingEnabled(true);
+    m_analyticsTable->setMinimumHeight(250);
+
+    m_analyticsTable->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_analyticsTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    tableAndSearchLayout->addWidget(m_analyticsTable, 1);
+    sidebarLayout->addLayout(tableAndSearchLayout);
+
+    sidebarLayout->addStretch();
+
     m_manualAddButton = new QPushButton(QString::fromUtf8("Добавить диапазон / CIDR вручную"), m_sidebar);
     m_manualAddButton->setMinimumHeight(35);
     sidebarLayout->addWidget(m_manualAddButton);
@@ -319,30 +306,47 @@ void MainWindow::setupUi() {
     mainLayout->addWidget(m_sidebar, 1);
 }
 
-// Расчет емкостей, долей рынка в процентах и обновление экрана аналитики
+// Расчет емкостей, долей глобального рынка и заполнение интерактивной таблицы
 void MainWindow::updateAnalyticsDisplay() {
+    m_analyticsTable->setSortingEnabled(false);
+    m_analyticsTable->setRowCount(0);
+
     if (m_companyStats.empty()) {
-        m_analyticsLabel->setText(QString::fromUtf8("<b>Аналитика:</b><br>База данных пуста. Загрузите файл..."));
+        m_analyticsTable->setSortingEnabled(true);
         return;
     }
 
-    uint32_t totalAllocated = 0;
-    for (auto const& [name, count] : m_companyStats) {
-        totalAllocated += count;
-    }
-
-    QString statsText = QString::fromUtf8("<b>АНАЛИТИКА АДРЕСНОГО ПРОСТРАНСТВА:</b><br>");
-    statsText += QString::fromUtf8("Всего занято: <b>%1</b> адресов<br>---<br><b>РАСПРЕДЕЛЕНИЕ ДОЛЕЙ:</b><br>").arg(totalAllocated);
-
-    // Расчет процентного соотношения от физического лимита адресной матрицы 10.0.0.0/8 (16 777 216 адресов)
+    int row = 0;
     for (auto const& [name, count] : m_companyStats) {
         if (count == 0) continue;
 
+        m_analyticsTable->insertRow(row);
+
+        QTableWidgetItem* nameItem = new QTableWidgetItem(name);
+        m_analyticsTable->setItem(row, 0, nameItem);
+
+        QTableWidgetItem* countItem = new QTableWidgetItem();
+        countItem->setData(Qt::DisplayRole, static_cast<uint32_t>(count));
+        m_analyticsTable->setItem(row, 1, countItem);
+
         double percent = (static_cast<double>(count) / 16777216.0) * 100.0;
-        statsText += QString::fromUtf8("• <b>Компания %1</b>:<br>  └ %2 IP (%3%)<br>")
-            .arg(name)
-            .arg(count)
-            .arg(percent, 0, 'f', 4); // Выводим с точностью в 4 знака для мелких подсетей
+        QTableWidgetItem* percentItem = new QTableWidgetItem();
+        percentItem->setData(Qt::DisplayRole, qRound(percent * 10000.0) / 10000.0);
+        m_analyticsTable->setItem(row, 2, percentItem);
+
+        row++;
     }
-    m_analyticsLabel->setText(statsText);
+
+    m_analyticsTable->setSortingEnabled(true);
+    m_analyticsTable->sortByColumn(1, Qt::DescendingOrder);
+
+    QString searchText = m_searchEdit->text();
+    if (!searchText.isEmpty()) {
+        for (int i = 0; i < m_analyticsTable->rowCount(); ++i) {
+            QTableWidgetItem* item = m_analyticsTable->item(i, 0);
+            if (item) {
+                m_analyticsTable->setRowHidden(i, !item->text().contains(searchText, Qt::CaseInsensitive));
+            }
+        }
+    }
 }
